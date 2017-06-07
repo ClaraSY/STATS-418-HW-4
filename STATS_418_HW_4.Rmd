@@ -1,0 +1,252 @@
+---
+title: "STATS_418_HW4"
+author: "Yuan Song (204877123)"
+date: "June 6, 2017"
+output: html_document
+---
+# Dataset Introduction
+The Adult Census Income Binary Classification dataset I am going to use is publicly available at the UCI Machine Learning Repository. This data derives from census data, and consists of information about 48842 individuals and their annual income. The predict variable is that if an individual earns >50k a year or <=50K a year, and I set >50K as 1, <=50K as 0.
+
+The dataset is made up of the following fields.
+1. Age: continuous
+2. Workclass: 8 values
+3. Fnlwgt: continuous.
+4. Education: 16 values
+5. Education-num: continuous. 
+6. Marital-status: 7 values
+7. Occupation: 14 values
+8. Relationship: 6 values
+9. Race: 5 values
+10. Sex: Male, Female
+11. Capital-gain: continuous. 
+12. Capital-loss: continuous.
+13. Hours-per-week: continuous. 
+14. Native-country: 41 values 
+15. >50K Income: Yes, No
+
+In the following, I will use various algorithms (Neural Networks, hyperparameter optimization for GBMs with random search, and ensembling various models) with implementations of h2o, and use various values for the hyperparameters (tuning).
+
+```{r}
+library(gbm)
+library(h2o)
+library(ggplot2)
+library(dplyr)
+library(readxl)
+library(glmnet)
+library(MASS)
+library(randomForest)
+library(ROCR)
+library(xgboost)
+library(tidyverse)
+library(data.table)
+library(dtplyr)
+library(forcats)
+library(grid)
+library(gridExtra)
+
+testdata <- read.table("https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data", sep = ",", col.names = c("age", "workclass", "fnlwgt", "education", "education-num", "marital-status", "occupation", "relationship", "race", "sex", "capital-gain", "capital-loss", "hours-per-week", "native-country", "earnings"))
+data <- read.table("https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data", sep = ",", col.names = c("age", "workclass", "fnlwgt", "education", "education-num", "marital-status", "occupation", "relationship", "race", "sex", "capital-gain", "capital-loss", "hours-per-week", "native-country", "earnings"))
+
+d <- rbind(testdata, data)
+Y<-as.factor(d$Y)
+d$Y[d$earnings == " <=50K"] <- 0
+d$Y[d$earnings == " >50K"] <- 1
+d[[15]]<-NULL
+```
+
+# Split of train, validation and test set
+The data was split into a training, a validation and a test set by using the probability of 0.6, 0.2, and 0.2.
+```{r}
+set.seed(123)
+idx <- sample(seq(1, 3), size = nrow(d), replace = TRUE, prob = c(.6, .2, .2))
+d_train <- d[idx == 1,]
+d_validation <- d[idx == 2,]
+d_test <- d[idx == 3,]
+
+X <- Matrix::sparse.model.matrix(Y ~ . -1, data = d)
+X_train <- X[idx == 1,]
+X_validation <- X[idx == 2,]
+X_test <- X[idx == 3,]
+
+# h2o
+h2o.init(nthreads=-1)
+
+dx <- h2o.importFile("https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data", sep = ",", col.names = c("age", "workclass", "fnlwgt", "education", "education-num", "marital-status", "occupation", "relationship", "race", "sex", "capital-gain", "capital-loss", "hours-per-week", "native-country", "earnings"))
+Y<-as.factor(dx$Y)
+dx_split <- h2o.splitFrame(dx, ratios = c(0.6,0.2), seed = 123)
+dx_train <- dx_split[[1]]
+dx_validation <- dx_split[[2]]
+dx_test <- dx_split[[3]]
+Xnames <- names(dx_train)[which(names(dx_train)!="Y")]
+
+```
+
+##Method 1 - Neural Net
+Neural networks are typically organized in layers. Layers are made up of a number of interconnected "nodes" which contain an "activation function". Patterns are presented to the network via the "input layer", which communicates to one or more "hidden layers". The hidden layers then link to an 'output layer'.
+
+The activation function is defined as the mapping of the input to the output via a non-linear transform function at each “node”. An epoch is a complete pass through a given dataset. Momentum is a value between 0 and 1 that increases the size of the steps taken towards the minimum by trying to jump from a local minima.
+```{r}
+h2o.init(nthreads=-1)
+
+nn1 <- h2o.deeplearning(x = Xnames, y = "earnings", training_frame = dx_train, validation_frame = dx_validation,
+            activation = "Rectifier", hidden = c(200,200), 
+            epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(nn1, dx_test)@metrics$AUC
+```
+
+
+```{r}
+nn2 <- h2o.deeplearning(x = Xnames, y = "earnings", training_frame = dx_train, validation_frame = dx_validation,
+            activation = "Rectifier", hidden = c(50,50,50,50), 
+            epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(nn2, dx_test)@metrics$AUC
+```
+
+```{r}
+nn3 <- h2o.deeplearning(x = Xnames, y = "earnings", training_frame = dx_train, validation_frame = dx_validation,
+            activation = "Rectifier", hidden = c(20),
+            epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(nn3, dx_test)@metrics$AUC
+```
+
+```{r}
+nn4 <- h2o.deeplearning(x = Xnames, y = "earnings", training_frame = dx_train, validation_frame = dx_validation,
+            activation = "Rectifier", hidden = c(200,200), 
+            rho = 0.95, epsilon = 1e-06,  ## default:  rho = 0.99, epsilon = 1e-08
+            epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(nn4, dx_test)@metrics$AUC
+```
+
+```{r}
+nn5 <- h2o.deeplearning(x = Xnames, y = "earnings", training_frame = dx_train, validation_frame = dx_validation,
+            activation = "Rectifier", hidden = c(200,200), 
+            rho = 0.999, epsilon = 1e-08,  ## default:  rho = 0.99, epsilon = 1e-08
+            epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(nn5, dx_test)@metrics$AUC
+```
+
+```{r}
+nn6 <- h2o.deeplearning(x = Xnames, y = "earnings", training_frame = dx_train, validation_frame = dx_validation,
+            activation = "Rectifier", hidden = c(200,200), 
+            adaptive_rate = FALSE, ## default: rate = 0.005, rate_decay = 1, momentum_stable = 0,
+            epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(nn6, dx_test)@metrics$AUC
+```
+
+```{r}
+nn7 <- h2o.deeplearning(x = Xnames, y = "earnings", training_frame = dx_train, validation_frame = dx_validation,
+            activation = "Rectifier", hidden = c(200,200), 
+            adaptive_rate = FALSE, rate = 0.001, momentum_start = 0.5, momentum_ramp = 1e5, momentum_stable = 0.99,
+            epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(nn7, dx_test)@metrics$AUC
+```
+
+```{r}
+nn8 <- h2o.deeplearning(x = Xnames, y = "earnings", training_frame = dx_train, validation_frame = dx_validation,
+            activation = "Rectifier", hidden = c(200,200), 
+            adaptive_rate = FALSE, rate = 0.01, rate_annealing = 1e-05, 
+            momentum_start = 0.5, momentum_ramp = 1e4, momentum_stable = 0.9,
+            epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(nn8, dx_test)@metrics$AUC
+
+nn8_pref <- h2o.performance(nn8)
+plot(nn8_pref,main= "ROCR curve for Neural Net Model 8")
+```
+
+AUC is between 0 and 1, and if AUC equals 1, it means the prediction model is prefect. The model 8 has the best AUC, 0.913082, which means higher than other models. We can also tell from the ROCR curve that area under the curve is the largest among all models.
+
+## Hyperparameter Optimization for GBMs with Random Search
+```{r}
+hyper_params <- list( ntrees = 100,  ## early stopping
+                     max_depth = 5:15, 
+                     min_rows = c(1,3,10,30,100),
+                     learn_rate = c(0.01,0.03,0.1),  
+                     learn_rate_annealing = c(0.99,0.995,1,1),
+                     sample_rate = c(0.4,0.7,1,1),
+                     col_sample_rate = c(0.7,1,1),
+                     nbins = c(30,100,300),
+                     nbins_cats = c(64,256,1024)
+)
+
+search_criteria <- list( strategy = "RandomDiscrete",
+                        max_runtime_secs = 10*3600,
+                        max_models = 100
+)
+
+
+mds <- h2o.grid(algorithm = "gbm", grid_id = "grd",
+                  x = Xnames, y = "earnings", training_frame = dx_train,
+                  validation_frame = dx_validation,
+                  hyper_params = hyper_params,
+                  search_criteria = search_criteria,
+                  stopping_metric = "AUC", stopping_tolerance = 1e-3, stopping_rounds = 2,
+                  seed = 123)
+
+mds_sort <- h2o.getGrid(grid_id = "grd", sort_by = "auc", decreasing = TRUE)
+mds_sort
+
+md_best <- h2o.getModel(mds_sort@model_ids[[1]])
+summary(md_best)
+
+h2o.auc(h2o.performance(md_best, dx_test))
+
+md_best_pref <- h2o.performance(md_best)
+plot(md_best_pref,main= "ROCR curve for GBM with random search")
+```
+The AUC is higher than those in the neural network model. The AUC is 0.9245228. So we can tell the model that use gradient boosted machines with random grid search is the best model due to the highest AUC for now. 
+
+From the summary, we can find the variable importances. Among all the variables, the relationship, capital-gain, education, occupation, and age are top 5 important variables. For those least important varibles, in the further research, we can try if these can be excluded.
+
+## Ensembles
+Ensemble modeling is the process of running two or more related but different analytical models and then synthesizing the results into a single score to improve the accuracy of predictive analytics and data mining applications.
+```{r}
+md1 <- h2o.glm(x = Xnames, y = "earnings", training_frame = dx_train, 
+                family = "binomial", 
+                alpha = 1, lambda = 0,
+                seed = 123,
+                nfolds = 5, fold_assignment = "Modulo", keep_cross_validation_predictions = TRUE)
+
+md2 <- h2o.randomForest(x = Xnames, y = "earnings", training_frame = dx_train, 
+                ntrees = 100,
+                seed = 123,
+                nfolds = 5, fold_assignment = "Modulo", keep_cross_validation_predictions = TRUE)
+
+md3 <- h2o.gbm(x = Xnames, y = "earnings", training_frame = dx_train, distribution = "bernoulli", 
+                ntrees = 100, max_depth = 10, learn_rate = 0.1, 
+                nbins = 100, seed = 123,
+                nfolds = 5, fold_assignment = "Modulo", keep_cross_validation_predictions = TRUE)    
+  
+md4 <- h2o.deeplearning(x = Xnames, y = "earnings", training_frame = dx_train, 
+            epochs = 5,
+            seed = 123,
+            nfolds = 5, fold_assignment = "Modulo", keep_cross_validation_predictions = TRUE) 
+
+
+md_ens <- h2o.stackedEnsemble(x = Xnames, y = "earnings", training_frame = dx_train, 
+                    base_models = list(md1@model_id, md2@model_id, md3@model_id, md4@model_id))
+
+
+h2o.auc(h2o.performance(md1, dx_test))
+h2o.auc(h2o.performance(md2, dx_test))
+h2o.auc(h2o.performance(md3, dx_test))
+h2o.auc(h2o.performance(md4, dx_test))
+h2o.auc(h2o.performance(md_ens, dx_test))
+
+
+h2o.getModel(md_ens@model$metalearner$name)@model$coefficients_table
+```
+## Training Time Required
+```{r}
+# Neural Nets
+summary(nn8) # 1 min 28.549 sec
+# GBM with random search
+summary(md_best) # 4 min  1.381 sec
+# Ensembling
+summary(md1) # 0.144 sec
+summary(md2) # 56.516 sec
+summary(md3) # 41.317 sec  
+summary(md4) # 1 min 56.666 sec
+```
+# Conclusion
+The best model spends the most time. 
+Gradient Boosted Machines with random search and Deep Learning in Neural Nets are all doing great work in predicting the model. With higher AUC, GBM with random search will be chosen as the final model.
